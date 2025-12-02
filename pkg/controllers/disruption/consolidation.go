@@ -403,8 +403,10 @@ func getCheapestReplacementPrice(newNodeClaim *pscheduling.NodeClaim) float64 {
 		return 0.0
 	}
 
-	cheapestOffering := orderedTypes[0].Offerings.Cheapest()
-	if cheapestOffering != nil && cheapestOffering.Available {
+	// Filter to available offerings first, then get the cheapest one
+	// This ensures we don't return 0.0 when the cheapest offering is unavailable
+	cheapestOffering := orderedTypes[0].Offerings.Available().Cheapest()
+	if cheapestOffering != nil {
 		return cheapestOffering.Price
 	}
 
@@ -469,9 +471,8 @@ func (c *consolidation) handleBlockedConsolidation(ctx context.Context, candidat
 func (c *consolidation) filterByPrice(ctx context.Context, candidates []*Candidate, results pscheduling.Results, candidatePrice float64) bool {
 	priceImprovementFactor, factorSource, nodePoolName := c.getPriceImprovementFactor(ctx, candidates)
 
-	// Get cheapest replacement price and instance type counts before filtering
+	// Get instance type counts before filtering
 	instanceTypesBefore := len(results.NewNodeClaims[0].InstanceTypeOptions)
-	cheapestReplacementPrice := getCheapestReplacementPrice(results.NewNodeClaims[0])
 
 	// Apply price improvement factor to require cost savings
 	var err error
@@ -487,6 +488,9 @@ func (c *consolidation) filterByPrice(ctx context.Context, candidates []*Candida
 
 	instanceTypesAfter := len(results.NewNodeClaims[0].InstanceTypeOptions)
 	blocked := instanceTypesAfter == 0
+
+	// Get cheapest replacement price after filtering to show accurate metrics
+	cheapestReplacementPrice := getCheapestReplacementPrice(results.NewNodeClaims[0])
 
 	// Calculate savings percentages and record metrics
 	actualSavingsPct := calculateSavingsPercentage(candidatePrice, cheapestReplacementPrice)
