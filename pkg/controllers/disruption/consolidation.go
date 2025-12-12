@@ -188,11 +188,31 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	// sort the instanceTypes by price before we take any actions like truncation for spot-to-spot consolidation or finding the nodeclaim
 	// that meets the minimum requirement after filteringByPrice
+	log.FromContext(ctx).V(1).Info("Debug: Requirements for OrderByPrice",
+		"requirements", results.NewNodeClaims[0].Requirements)
 	results.NewNodeClaims[0].InstanceTypeOptions = results.NewNodeClaims[0].InstanceTypeOptions.OrderByPrice(results.NewNodeClaims[0].Requirements)
 
 	if allExistingAreSpot &&
 		results.NewNodeClaims[0].Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot) {
 		return c.computeSpotToSpotConsolidation(ctx, candidates, results, candidatePrice)
+	}
+
+	// Check if any replacement instances are available
+	if len(results.NewNodeClaims[0].InstanceTypeOptions) > 0 {
+		hasAvailableInstances := false
+		for _, instanceType := range results.NewNodeClaims[0].InstanceTypeOptions {
+			if ofs := instanceType.Offerings.Available(); len(ofs) != 0 {
+				hasAvailableInstances = true
+				break
+			}
+		}
+		if !hasAvailableInstances {
+			if len(candidates) == 1 {
+				log.FromContext(ctx).V(1).Info("No available instance types for replacement",
+					"node", candidates[0].Node.Name,
+					"nodeclaim", candidates[0].NodeClaim.Name)
+			}
+		}
 	}
 
 	// Apply price filtering to ensure cost savings requirements are met
@@ -423,10 +443,23 @@ func getCheapestReplacementPrice(ctx context.Context, newNodeClaim *pscheduling.
 		return 0.0
 	}
 
+	logger.V(1).Info("getCheapestReplacementPrice: Found ordered instance types")
+	for i, instanceType := range orderedTypes {
+		cheapestOffering := instanceType.Offerings.Cheapest()
+		available := len(instanceType.Offerings.Available()) > 0
+		price := float64(0)
+		if cheapestOffering != nil {
+			price = cheapestOffering.Price
+		}
+		logger.V(1).Info("getCheapestReplacementPrice: Instance type details",
+			"order", i,
+			"instanceType", instanceType.Name,
+			"price", price,
+			"available", available,
+			"offeringsCount", len(instanceType.Offerings))
+	}
+
 	cheapestType := orderedTypes[0]
-	logger.V(1).Info("getCheapestReplacementPrice: Found cheapest instance type",
-		"instanceType", cheapestType.Name,
-		"offeringsCount", len(cheapestType.Offerings))
 
 	cheapestOffering := cheapestType.Offerings.Cheapest()
 	if cheapestOffering == nil {
@@ -514,7 +547,7 @@ func (c *consolidation) filterByPrice(ctx context.Context, candidates []*Candida
 
 	// Get cheapest replacement price and instance type counts before filtering
 	instanceTypesBefore := len(results.NewNodeClaims[0].InstanceTypeOptions)
-	cheapestReplacementPrice := getCheapestReplacementPrice(results.NewNodeClaims[0])
+	cheapestReplacementPrice := getCheapestReplacementPrice(ctx, results.NewNodeClaims[0])
 
 	// Apply price improvement factor to require cost savings
 	var err error
