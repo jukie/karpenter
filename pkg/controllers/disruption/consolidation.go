@@ -196,9 +196,18 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	}
 
 	// Apply price filtering to ensure cost savings requirements are met
+	log.FromContext(ctx).V(1).Info("Applying price filtering for consolidation",
+		"candidate_count", len(candidates),
+		"candidate_price", fmt.Sprintf("$%.2f", candidatePrice),
+		"instance_types_before_filtering", len(results.NewNodeClaims[0].InstanceTypeOptions))
+
 	if !c.filterByPrice(ctx, candidates, results, candidatePrice) {
+		log.FromContext(ctx).V(1).Info("Price filtering blocked consolidation")
 		return Command{}, nil
 	}
+
+	log.FromContext(ctx).V(1).Info("Price filtering allowed consolidation to proceed",
+		"instance_types_after_filtering", len(results.NewNodeClaims[0].InstanceTypeOptions))
 
 	// We are consolidating a node from OD -> [OD,Spot] but have filtered the instance types by cost based on the
 	// assumption, that the spot variant will launch. We also need to add a requirement to the node to ensure that if
@@ -393,21 +402,55 @@ func calculateSavingsPercentage(currentPrice, replacementPrice float64) float64 
 
 // getCheapestReplacementPrice extracts the cheapest replacement price from a NodeClaim's instance type options.
 // Returns 0.0 if no valid price is found.
-func getCheapestReplacementPrice(newNodeClaim *pscheduling.NodeClaim) float64 {
+func getCheapestReplacementPrice(ctx context.Context, newNodeClaim *pscheduling.NodeClaim) float64 {
+	logger := log.FromContext(ctx)
+
+	logger.V(1).Info("getCheapestReplacementPrice: Starting function",
+		"instanceTypeOptionsCount", len(newNodeClaim.InstanceTypeOptions))
+
 	if len(newNodeClaim.InstanceTypeOptions) == 0 {
+		logger.V(1).Info("getCheapestReplacementPrice: No instance type options available, returning 0.0")
 		return 0.0
 	}
 
 	orderedTypes := newNodeClaim.InstanceTypeOptions.OrderByPrice(newNodeClaim.Requirements)
+	logger.V(1).Info("getCheapestReplacementPrice: Ordered instance types by price",
+		"originalCount", len(newNodeClaim.InstanceTypeOptions),
+		"orderedCount", len(orderedTypes))
+
 	if len(orderedTypes) == 0 {
+		logger.V(1).Info("getCheapestReplacementPrice: No ordered types after OrderByPrice, returning 0.0")
 		return 0.0
 	}
 
-	cheapestOffering := orderedTypes[0].Offerings.Cheapest()
-	if cheapestOffering != nil && cheapestOffering.Available {
+	cheapestType := orderedTypes[0]
+	logger.V(1).Info("getCheapestReplacementPrice: Found cheapest instance type",
+		"instanceType", cheapestType.Name,
+		"offeringsCount", len(cheapestType.Offerings))
+
+	cheapestOffering := cheapestType.Offerings.Cheapest()
+	if cheapestOffering == nil {
+		logger.V(1).Info("getCheapestReplacementPrice: No cheapest offering found, returning 0.0",
+			"instanceType", cheapestType.Name)
+		return 0.0
+	}
+
+	logger.V(1).Info("getCheapestReplacementPrice: Found cheapest offering",
+		"instanceType", cheapestType.Name,
+		"price", cheapestOffering.Price,
+		"available", cheapestOffering.Available,
+		"zone", cheapestOffering.Zone,
+		"capacityType", cheapestOffering.CapacityType)
+
+	if cheapestOffering.Available {
+		logger.V(1).Info("getCheapestReplacementPrice: Returning available offering price",
+			"price", cheapestOffering.Price)
 		return cheapestOffering.Price
 	}
 
+	logger.V(1).Info("getCheapestReplacementPrice: Cheapest offering not available, returning 0.0",
+		"instanceType", cheapestType.Name,
+		"price", cheapestOffering.Price)
 	return 0.0
 }
 
